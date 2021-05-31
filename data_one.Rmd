@@ -1,0 +1,492 @@
+---
+title: "data_one"
+author: "Julius Ongteco"
+date: "5/28/2021"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+## Preprocess
+
+Library Setup
+
+```{r libraries}
+library(car)
+library(caret)
+library(broom)
+library(lmvar)
+library(MASS)
+library(rpart)
+library(e1071)
+library(PerformanceAnalytics)
+library(explore)
+library(ggplot2)
+library(dplyr)
+library(pls)
+library(rcompanion)
+library(randomForest)
+library(yardstick)
+```
+
+Load Data
+
+```{r data1}
+data1 <- read.table("C:/Users/julius.ongteco/Documents/asml/data1.csv", sep = ";", dec = ".", header = TRUE)
+```
+
+Remove children since its the same as the index.
+
+```{r remove children}
+data1 = data1[,-1]
+head(data1)
+```
+
+Convert to Factor
+
+```{r factor }
+data1$Psychologist_f = factor(data1$Psychologist)
+is.factor(data1$Psychologist_f)
+```
+
+Remove duplicates
+
+```{r duplicate}
+data1 = data1[,-2]
+head(data1)
+```
+
+```{r summary}
+summary(data1)
+```
+
+Balanced distribution of factors.
+
+```{r balance}
+table(data1$Treatment,data1$Psychologist_f)
+```
+Tells us that the actual treatment is better than the placebo.
+
+```{r boxplot}
+boxplot(data1$Development~data1$Treatment+data1$Psychologist_f, xlab = "Treatment", ylab = "Development")
+```
+
+```{r convert to factor}
+data1$Treatment_placebo       <- ifelse(data1$Treatment == 'placebo', 1, 0) 
+data1$Treatment_produit_actif <- ifelse(data1$Treatment == 'produit actif', 1, 0)
+data1$Treatment_placebo       <-factor(data1$Treatment_placebo)       
+data1$Treatment_produit_actif <-factor(data1$Treatment_produit_actif)
+data1$Psychologist_f            <-factor(data1$Psychologist_f)  
+data1
+```
+
+
+```{r data drop columns}
+data1 <- data1[,2:5]
+str(data1)
+
+```
+```{r train test split}
+set.seed(42)
+
+train.row <- createDataPartition(data1$Development, p=0.65, list=FALSE)
+data1.train = data1[train.row, ]
+data1.test = data1[-train.row,]
+summary(data1)
+data1.test
+```
+
+```{r explore variables}
+data1 %>%
+  explore_all()
+```
+```{r plot in relation to development}
+par(mfrow=c(2, 3))
+boxplot(Development ~ Psychologist_f,      data = data1)
+boxplot(Development ~ Treatment_placebo, data = data1)
+boxplot(Development ~ Treatment_produit_actif, data = data1)
+boxplot(Development ~.,              data = data1)
+```
+
+
+## Model assumptions
+
+
+I wanted to check for assumptions on the models. Since we are dealing with categorical input and quantitative output then we might want to use anova
+
+```{r anova base assumptions}
+anova_model <- aov(Development ~. , data = data1)
+summary(anova_model)
+
+
+```
+
+Psychologist_f seems to be independent. Treatment on the other hand seems to be dependent.
+
+```{r anova placebo assumptions}
+anova_model_pl <- aov(Development ~ Treatment_placebo , data = data1)
+summary(anova_model_pl)
+```
+
+```{r anova produit_actif assumptions}
+anova_model_pa <- aov(Development ~ Treatment_produit_actif , data = data1)
+summary(anova_model_pa)
+```
+
+
+We can confirm that treatment is dependent.
+
+
+```{r anova psychologist_f assumptions}
+anova_model_ps <- aov(Development ~ Psychologist_f, data = data1)
+summary(anova_model_ps)
+```
+What if we look at additive and interaction effect?
+
+```{r additive}
+anova_add <- aov(Development ~ Treatment_placebo + Psychologist_f, data = data1)
+summary(anova_add)
+
+```
+
+```{r additive p}
+anova_add_p <- aov(Development ~ Treatment_placebo + Treatment_produit_actif, data = data1)
+summary(anova_add_p)
+
+```
+```{r additive pa}
+anova_add_pa <- aov(Development ~ Treatment_produit_actif + Psychologist_f, data = data1)
+summary(anova_add_pa)
+
+```
+
+Same as base.
+
+```{r interaction}
+anova_int <- aov(Development ~ Psychologist_f * Treatment_placebo, data = data1)
+summary(anova_int)
+```
+
+
+```{r interaction pa}
+anova_int <- aov(Development ~ Psychologist_f * Treatment_produit_actif, data = data1)
+summary(anova_int)
+```
+Interesting that if we multiply both psychologist_f and treatment then it becomes independent.
+
+
+```{r normality}
+# Extract the residuals
+anova_residuals <- residuals(object = anova_add)
+
+# Run Shapiro-Wilk test
+shapiro.test(x = anova_residuals)
+
+```
+
+Keep in mind since we have categorical features, we want to run a chi-square test, then...
+
+```{r chisq p}
+chisq.test(data1$Treatment_placebo, data1$Development, correct=FALSE)
+```
+```{r chisq pa}
+chisq.test(data1$Treatment_produit_actif, data1$Development, correct=FALSE)
+```
+
+
+Seems the same regardless if we use Yates continuity correction or not. These two variables are dependent.
+
+```{r chisq psych}
+chisq.test(data1$Psychologist_f, data1$Development, correct=FALSE)
+```
+Seems the same regardless if we use Yates continuity correction or not. Again, these two variables are dependent.
+
+This means knowing both of these variables helps us predict "Development"
+
+## Feature selection
+
+In terms of feature selection, we could try PCR (principal components regression) and  PLS (partial least squares). See if there's a difference.
+
+```{r base pcr}
+pcr_model <- pcr(Development~., data = data1, scale = TRUE, validation = "CV")
+summary(pcr_model)
+
+```
+```{r base pls}
+pls.model = plsr(Development ~ ., data = data1, validation = "CV")
+summary(pls.model)
+
+# Find the number of dimensions with lowest cross validation error
+cv = RMSEP(pls.model)
+best.dims = which.min(cv$val[estimate = "adjCV", , ]) - 1
+
+pls.model = plsr(Development ~ ., data = data1, ncomp = best.dims)
+```
+```{r pcr}
+plot(RMSEP(pcr_model), legendpos = "topright")
+plot(RMSEP(pls.model), legendpos = "topright")
+plot(pcr_model, ncomp = 3, asp = 1, line = TRUE)
+```
+
+I guess we're sticking with keeping all components or categorical variables.
+
+## Model Building
+
+We will try Linear, Decision Tree and Random Forest.
+
+# Linear
+
+```{r linear}
+# Train Control Function. small value for number since it will say that there are missing values.
+train.control <- trainControl(number = 2, method="cv",savePredictions = "final")
+
+# full model.
+lm_full <- train(Development ~ . , data = data1.train, method = "lm",trControl = train.control, metric="RMSE")
+
+summary(lm_full$finalModel)
+lm_full$results
+
+```
+
+Other Linear models.
+
+```{r output}
+lm_1 <- train(Development ~ Treatment_placebo , data = data1.train, method = "lm",trControl = train.control, metric="RMSE")
+lm_2 <- train(Development ~ Psychologist_f , data = data1.train, method = "lm",trControl = train.control, metric="RMSE")
+lm_3 <- train(Development ~ Treatment_placebo+Psychologist_f , data = data1.train, method = "lm",trControl = train.control, metric="RMSE")
+lm_4 <- train(Development ~ Treatment_placebo*Psychologist_f , data = data1.train, method = "lm",trControl = train.control, metric="RMSE")
+lm_5 <- train(Development ~ Treatment_produit_actif , data = data1.train, method = "lm",trControl = train.control, metric="RMSE")
+lm_6 <- train(Development ~ Treatment_produit_actif+Psychologist_f, data = data1.train, method = "lm",trControl = train.control, metric="RMSE")
+lm_7 <- train(Development ~ Treatment_produit_actif*Psychologist_f, data = data1.train, method = "lm",trControl = train.control, metric="RMSE")
+
+# summary
+summary(lm_1$finalModel)
+lm_1$results
+
+summary(lm_2$finalModel)
+lm_2$results
+
+summary(lm_3$finalModel)
+lm_3$results
+
+summary(lm_4$finalModel)
+lm_4$results
+
+summary(lm_5$finalModel)
+lm_5$results
+
+summary(lm_6$finalModel)
+lm_6$results
+
+summary(lm_7$finalModel)
+lm_7$results
+
+
+
+```
+
+```{r predict}
+# prediction for lm models
+
+eval_results1 <- function(true, predicted, df) {
+  SSE <- sum((predicted - true)^2)
+  SST <- sum((true - mean(true))^2)
+  RMSE = sqrt(SSE/nrow(df))
+  
+  data.frame(
+    RMSE = RMSE)
+}
+
+lm_train = predict(lm_1, data1.train, type = "raw")
+eval_results1(data1.train$Development, lm_train, data1.train)
+
+lm_test = predict(lm_1, data1.test, type = "raw")
+eval_results1(data1.test$Development, lm_test, data1.test)
+
+lm_train_2 = predict(lm_2, data1.train, type = "raw")
+eval_results1(data1.train$Development, lm_train_2, data1.train)
+
+lm_test_2 = predict(lm_2, data1.test, type = "raw")
+eval_results1(data1.test$Development, lm_test_2, data1.test)
+
+lm_train_3 = predict(lm_3, data1.train, type = "raw")
+eval_results1(data1.train$Development, lm_train_3, data1.train)
+
+lm_test_3 = predict(lm_3, data1.test, type = "raw")
+eval_results1(data1.test$Development, lm_test_3, data1.test)
+
+lm_train_4 = predict(lm_4, data1.train, type = "raw")
+eval_results1(data1.train$Development, lm_train_4, data1.train)
+
+lm_test_4 = predict(lm_4, data1.test, type = "raw")
+eval_results1(data1.test$Development, lm_test_4, data1.test)
+
+lm_train_5 = predict(lm_5, data1.train, type = "raw")
+eval_results1(data1.train$Development, lm_train_5, data1.train)
+
+lm_test_5 = predict(lm_5, data1.test, type = "raw")
+eval_results1(data1.test$Development, lm_test_5, data1.test)
+
+lm_train_6 = predict(lm_6, data1.train, type = "raw")
+eval_results1(data1.train$Development, lm_train_6, data1.train)
+
+lm_test_6 = predict(lm_6, data1.test, type = "raw")
+eval_results1(data1.test$Development, lm_test_6, data1.test)
+
+lm_train_7 = predict(lm_7, data1.train, type = "raw")
+eval_results1(data1.train$Development, lm_train_7, data1.train)
+
+lm_test_7 = predict(lm_7, data1.test, type = "raw")
+eval_results1(data1.test$Development, lm_test_7, data1.test)
+
+```
+
+
+LM1 and LM5 tied for lowest rmse for predict. RMSE 21.47547
+
+LM4 and LM7 tied for lowest rmse for train.
+
+I thought about testing it with Lasso or Ridge but decided not to since these can only be used if we have categorical and quantitative as x variables. but since our x variables are merely categorical. Decided not to do it.
+
+# CART
+```{r cart max}
+t_max = rpart(Development~., data = data1.train, control = rpart.control(minsplit = 2, cp = 10^(-9) ))
+t_max
+summary(t_max)
+plotcp(t_max)
+```
+
+One tree?
+
+# Evaluation
+```{r eval}
+
+
+# Train test.
+predictions_train_cart1 = predict(t_max, data = data1.train)
+eval_results1(data1.train$Development, predictions_train_cart1, data1.train)
+
+predictions_test_cart1 = predict(t_max, newdata = data1.test)
+eval_results1(data1.test$Development, predictions_test_cart1, data1.test)
+
+
+
+```
+
+
+```{r cart rsq}
+rsq.rpart(t_max)
+```
+
+According to Elements of Statistical Learning we do something called the One Standard Error Rule.
+
+```{r cart cp}
+cart_cp=rpart(Development ~ ., data=data1.train,cp=0.048, minsplit=2, method= 'anova')
+cart_cp
+summary(cart_cp)
+```
+
+```{r rmse}
+
+# prediction for cart models.
+eval_results2 <- function(true, predicted, df) {
+  SSE <- sum((predicted - true)^2)
+  SST <- sum((true - mean(true))^2)
+  RMSE = sqrt(SSE/nrow(df))
+  
+  data.frame(
+    RMSE = RMSE)
+}
+
+predictions_train_cart2 = predict(cart_cp, data = data1.train)
+eval_results2(data1.train$Development, predictions_train_cart2, data1.train)
+
+predictions_test_cart2 = predict(cart_cp, newdata = data1.test)
+eval_results2(data1.test$Development, predictions_test_cart2, data1.test)
+
+```
+
+```{r rsq rpart cart cp}
+rsq.rpart(cart_cp)
+```
+
+# Random Forest
+
+```{r rf base}
+# ntree at default value.
+rf <- randomForest(Development ~ ., data = data1.train, ntree = 500, mtry = 1, importance = TRUE, replace = T )
+rf 
+
+print("RMSE")
+sqrt(rf$mse[length(rf$mse)])
+plot(rf)
+```
+```{r predict rf}
+predict_test_rf = predict(rf, newdata= data1.test)
+eval_results2(data1.test$Development, predict_test_rf, data1.test)
+
+
+```
+
+```{r modellookup}
+modelLookup(("rf"))
+```
+
+This tells us that tunelength parameter is tuned by mtry.
+
+
+
+```{r rf with search for best mtry}
+bestmtry <- tuneRF(data1.train, data1.train$Development, stepFactor=1.5, improve=1e-5, ntree=500)
+bestmtry
+```
+
+Tells us initially we could go with mtry of 1.
+
+
+``` {r predictions rf cv}
+rf_cv <- train(Development ~., data = data1.train, method = "rf",trControl = train.control, tuneLength = 15,metric="RMSE")
+
+
+#Model Results   
+summary(rf_cv)
+print(rf_cv$results)
+```
+
+check mtry with cross validation. seems to be better with mtry.
+
+```{r predict rf cv results}
+predict_test_rf_cv = predict(rf_cv, newdata= data1.test)
+eval_results2(data1.test$Development, predict_test_rf_cv, data1.test)
+
+
+```
+
+
+```{r model eval}
+vmetrics <- function(results)
+{
+  row = c(results$RMSE, 
+          results$Rsquared)
+}
+
+```
+
+
+```{r comparison}
+predict_lm = predict(lm_1, newdata = data1.test, metric="RMSE")
+predict_cart = predict(cart_cp, newdata = data1.test, metric="RMSE")
+predict_rf_cv = predict(rf_cv, newdata = data1.test, metric="RMSE")
+
+pred_RMSE <- list(lm_final   =   RMSE(predict_lm,      data1.test$Development),
+                  cart_final     =   RMSE(predict_cart, data1.test$Development),
+                  rf_final      =   RMSE(predict_rf_cv,   data1.test$Development))
+pred_RMSE
+
+```
+
+Linear for the win.
+
+
+

@@ -1,0 +1,245 @@
+---
+title: "data_two"
+author: "Julius Ongteco"
+date: "5/30/2021"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+# Load Data
+
+```{r setup}
+library(car)
+library(caret)
+library(broom)
+library(lmvar)
+library(MASS)
+library(rpart)
+library(e1071)
+library(PerformanceAnalytics)
+library(explore)
+library(ggplot2)
+library(dplyr)
+library(pls)
+library(rcompanion)
+library(randomForest)
+library(yardstick)
+
+data2 = read.table("C:/Users/julius.ongteco/Documents/asml/data2.csv", sep = ";", dec = ".", header = TRUE)
+
+data2 = data2[,-1]
+```
+
+Head for Data2
+
+```{r head}
+head(data2)
+```
+
+# Train Test Split
+
+```{r train}
+set.seed(42)
+
+train.row.num = floor(dim(data2)[1] * 0.75)
+
+train.row = sample(1:dim(data2)[1], train.row.num, replace = FALSE)
+
+X.train = data2[train.row, 1:4]
+y.train = data2[train.row, 5]
+X.test = data2[-train.row, 1:4]
+y.test = data2[-train.row,5]
+
+```
+
+```{r explore}
+
+data2 %>%
+  explore_all()
+
+```
+
+
+```{r check correlation}
+cor(X.train)
+
+```
+Bitter and Acid, Sugar and Pulpy both have a strong correlation. Sugar and Acid have strong negative correlation. Same goes for Sugar and Bitter.
+
+# Model assumptions
+
+Since we have quantitative variables, we're going to use linear, decision trees, and random forest.
+
+
+```{r model}
+# Base Linear Model
+# Train Control Function. small value for number since it will say that there are missing values.
+L = lm(y.train ~ . , data = X.train)
+summary(L)
+plot(L)
+```
+
+```{r normality}
+shapiro.test(L$residuals)
+```
+
+Since the value is higher than 0.05, we do not reject Ho. residuals are normal.
+
+# variable Selection
+
+```{r changing variables for variable selection}
+X.train.sq = data.frame(X.train, pul.sq = X.train[,"Pulpy"]^2, Sug.sq = X.train[,"Sugar"]^2, Aci.sq = X.train[,"Acid"]^2, Bit.sq = X.train[,"Bitter"]^2)
+
+X.test.sq = data.frame(X.test, pul.sq = X.test[,"Pulpy"]^2, Sug.sq = X.test[,"Sugar"]^2, Aci.sq = X.test[,"Acid"]^2, Bit.sq = X.test[,"Bitter"]^2)
+
+num.comb = rep(NA,8) # store number of combinations for each value of i
+
+for(i in 1:8){
+  
+  num.comb[i] = dim(as.matrix(combn(1:8, i)))[2] #number of combinations for a value of i
+
+}
+
+X.full.train = data.frame(X.train.sq,y.train)
+
+# matrix to save all possible test errors adjusted
+store.results = matrix(NA,max(num.comb),8)
+
+test = list() # list to save all possible combinations of i expl variables; i = 1,..,8.
+for(i in 1:8){
+  #i drives the number of expl variable
+
+  test[[i]] = as.matrix(combn(1:8, i)) # combn returns a matrix where each columns is a possible combination of i expl variables from an initial set of values from 1 to 8
+  
+  #this for iterates over the columns of test[[i]] which is a matrix as per the previous command
+  for(j in 1:dim(test[[i]])[2] ){
+    
+    df.loop = X.full.train[,c(9,test[[i]][,j])] # dataset considering the j-th combination of i expl variables
+    L.loop = lm(y.train ~ ., data = df.loop) # corresponding model
+    
+    y.hat.test = predict(L.loop, newdata = X.test.sq) # prediction on test set
+    
+    store.results[j,i] =  sqrt(sum((y.test - y.hat.test)^2)/ length(y.test) )# test error
+  }
+  
+}
+
+xval = rep(1:8,each = max(num.comb))
+
+plot(xval, as.vector(store.results), xlab = 'number of explanatory variables', ylab = 'test error')
+
+```
+
+
+```{r lm test error}
+ind.min = which(store.results == store.results[which.min(store.results)], arr.ind=TRUE)
+
+store.results[ind.min] # best test error
+
+Lfinal.test.err = store.results[ind.min]
+ 
+best.param = test[[ ind.min[2] ]][,ind.min[1]] #expl var with best r2 adj
+
+best.param
+```
+best test error would be 0.9507836 with parameters 1,2,3, 5, 8
+
+```{r colnames}
+colnames(X.train.sq[,best.param])
+
+```
+For the linear model, these are the five that have the smallest error.
+
+```{r lm}
+
+Lfinal = lm(y.train ~ . , data = X.full.train[, c(9, best.param) ]) #selected model
+
+summary(Lfinal) # check all details of selected mode
+
+```
+
+The RMSE changes.
+
+# CART
+
+```{r cart}
+cart = rpart(y.train~., data = X.train, control = rpart.control(minsplit = 2, cp = 10^(-9) ))
+
+plot(cart)
+text(cart)
+```
+
+```{r sum}
+sum(y.train != predict(cart, newdata = X.train))
+
+```
+```{r par}
+par.cart = printcp(cart) 
+```
+```{r regression}
+printcp(cart) 
+```
+```{r cart  plot}
+plotcp(cart)
+```
+
+We try to remove the parts of the tree that do not provide power to classify.
+
+```{r remove}
+pos.min.xerr = which.min(par.cart[,'xerror']) # row number of the tree with minimum xerror
+
+threshold.tree = unique(par.cart[pos.min.xerr,"xerror"] + par.cart[pos.min.xerr,"xstd"]) #1SE threshold
+
+row.prune = which(par.cart[,"xerror"] == par.cart[par.cart[,"xerror"]< threshold.tree,][,"xerror"][1])
+
+alpha.opt = par.cart[row.prune,"CP"]
+
+cart_pruned = prune(cart, cp = alpha.opt)
+
+plot(cart_pruned)
+text(cart_pruned)
+```
+
+```{r cart test error}
+
+Y.hat.Cart.test = predict(cart_pruned, newdata = X.test)
+
+CART.test.error = sqrt(sum( (y.test - Y.hat.Cart.test )^2 )/length(y.test))
+
+CART.test.error
+```
+
+# Random Forest
+
+```{r rf}
+rf = randomForest(y.train~., data = X.train, ntree = 500)
+rf
+```
+
+
+```{r predict}
+Y.hat.Forest.test = predict(rf, newdata = X.test)
+
+rf.test.error = sqrt(sum( (y.test - Y.hat.Forest.test )^2 )/length(y.test))
+
+rf.test.error
+
+```
+
+Given the three test errors. Linear model with 0.95 ("Sugar"  "Acid"   "Bitter" "pul.sq" "Bit.sq") is the model with the lowest test error.
+
+If we were to consider this as the final model...
+
+```{r final}
+final_data2 = data.frame(data2, pul.sq = data2[,"Pulpy"]^2, Bit.sq = data2[, "Bitter"]^2)
+
+# "Sugar"  "Acid"   "Bitter" "pul.sq" "Bit.sq"
+
+Lfinal.full = lm(Grade ~ Sugar + Acid + Pulpy + pul.sq,  Bitter + Bit.sq, data = final_data2)
+
+Lfinal.full
+
+```
+
